@@ -22,6 +22,7 @@ DATA_DIR = "./data"
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
 MEMORY_FILE = os.path.join(DATA_DIR, "Memory.csv")
 FITBIT_FILE = os.path.join(DATA_DIR, "Fitbit.csv")
+EEG_LOG_FILE = os.path.join(DATA_DIR, "eeg_events_log.jsonl")
 today_str = date.today().isoformat()
 
 # Difyから取得したAPIキーとURLを環境変数から読み込む
@@ -84,6 +85,44 @@ class EEGEvent(BaseModel):
     event_type: str
     arousal_value: float
 
+# --- 脳波サマリー用のヘルパー関数 ---
+def format_event_to_sentence(event_data: dict) -> str:
+    """脳波イベントの辞書データを自然な日本語の文章に変換する"""
+    try:
+        time_str = datetime.fromisoformat(event_data["timestamp"]).strftime("%H時%M分頃")
+        place_name = event_data.get("place_name", "不明な場所")
+        return f"・{time_str}、{place_name}で、何かに強く興味を惹かれたようです。"
+    except: return ""
+
+async def get_eeg_summary() -> Optional[str]:
+    """今日の脳波イベントログを読み込み、LLM用の要約テキストを作成する"""
+    if not os.path.exists(EEG_LOG_FILE): 
+        print("脳波ログファイルが見つかりません。")
+        return None
+    
+    today_events = []
+    try:
+        with open(EEG_LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                    if "arousal_value" in event and datetime.fromisoformat(event["timestamp"]).date() == date.today():
+                        today_events.append(event)
+                except: continue
+        
+        if not today_events: 
+            print("今日の脳波イベントはありません。")
+            return None
+
+        summary = "\n".join(filter(None, [format_event_to_sentence(e) for e in today_events]))
+        highlight = max(today_events, key=lambda e: e.get("arousal_value", 0))
+        summary += f"\nこの中で特に反応が強かったのは、{highlight.get('place_name', 'ある場所')}での出来事のようです。"
+        print(f"脳波サマリーを作成しました:\n{summary}")
+        return summary
+    except Exception as e:
+        print(f"🚨 脳波サマリー作成中にエラー: {e}")
+        return None
+
 
 @app.post("/log_event")
 async def log_eeg_event(event: EEGEvent):
@@ -136,8 +175,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # --- 内部関数定義 ---
 
-    async def getFitbitData():
-        return {"steps": 12000, "sleep_hours": 7.5}
+    
 
     async def checkLastDate():
         nonlocal fitbit_sending
@@ -148,15 +186,16 @@ async def websocket_endpoint(websocket: WebSocket):
             current_data = {}
 
         last_date = current_data.get("last_conversation_date")
+        print(last_date)
         if last_date != today_str:
-            print(f"前回の会話日は {last_date}。今日の FitBit データを入手します。")
+            print(f"前回の会話日は {last_date}。今日の 脳波 データを入手します。")
             fitbit_sending = True
             current_data["last_conversation_date"] = today_str
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(current_data, f, ensure_ascii=False, indent=4)
             print("last_conversation_date を更新しました。")
         else:
-            print("今日すでに FitBit データは処理済みです。")
+            print("今日すでに 脳波 データは処理済みです。")
 
     async def sendToLLM(message: str):
         nonlocal llm_wating, fitbit_sending, conversation_id, chat_history
@@ -181,9 +220,9 @@ async def websocket_endpoint(websocket: WebSocket):
 
         try:
             if fitbit_sending:
-                fitbit_data = await getFitbitData()
-                data_payload['inputs']['fitbit_context'] = f"ユーザーの活動データ: 歩数 {fitbit_data['steps']}歩, 睡眠時間 {fitbit_data['sleep_hours']}時間"
-                print(f"LLMにメッセージとFitbitデータを送信 (Blocking): {message}")
+                fitbit_data = await get_eeg_summary()
+                data_payload['inputs']['eeg_summary'] = fitbit_data
+                print(f"LLMにメッセージとFitbitデータを送信 (Blocking): {message} {fitbit_data}")
                 fitbit_sending = False
             else:
                 print(f"LLMにメッセージを送信 (Blocking): {message}")
