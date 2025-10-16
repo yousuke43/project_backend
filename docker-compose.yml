@@ -1,0 +1,32 @@
+services:
+  transcriber-app:
+    # Build the Docker image from the Dockerfile in the current directory
+    build: .
+    # Name the container for easier identification
+    container_name: gpu-transcriber-service
+    # Read environment variables from the .env file
+    env_file:
+      - .env
+    # Map port 8000 on the host to port 8000 in the container
+    ports:
+      - "8000:8000"
+    # Mount the local ./data directory to /app/data in the container.
+    # This ensures that the conversation data is persisted on the host machine.
+    volumes:
+      - ./data:/app/data
+       
+      - .:/app  # ← この行を追加！
+    # This section is crucial for enabling GPU access within the container.
+    # It requires the NVIDIA Container Toolkit to be installed on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Requesting one GPU
+              capabilities: [gpu]
+    # Restart the container automatically if it stops
+    restart: unless-stopped
+
+    
+
