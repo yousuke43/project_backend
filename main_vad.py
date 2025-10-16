@@ -15,6 +15,7 @@ from faster_whisper import WhisperModel
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import voicevox_util
 from pathlib import Path
+from pydantic import BaseModel
 
 # --- グローバル設定 (Global Settings) ---
 DATA_DIR = "./data"
@@ -74,8 +75,32 @@ except Exception as e:
     vad_model = None
     utils = None
 
+class EEGEvent(BaseModel):
+    timestamp: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    place_name: str
+    event_type: str
+    arousal_value: float
+    
+@app.post("/log_event")
+async def log_eeg_event(event: EEGEvent):
+    """
+    クライアントから脳波イベントデータを受け取り、
+    JSON Lines形式 (.jsonl) のファイルに追記して保存するエンドポイント。
+    """
+    print(f"📡 イベント受信: {event.place_name} (覚醒度: {event.arousal_value:.2f})")
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(EEG_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(event.model_dump_json() + "\n")
+        print(f"💾 イベントを '{EEG_LOG_FILE}' に保存しました。")
+        return {"status": "success"}
+    except Exception as e:
+        print(f"🚨 イベントのファイル保存中にエラーが発生しました: {e}")
+        return {"status": "error", "message": str(e)}
 
-# --- 4. WebSocket エンドポイント (WebSocket Endpoint) ---
+
 @app.websocket("/ws/transcribe")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -141,7 +166,8 @@ async def websocket_endpoint(websocket: WebSocket):
         
         data_payload = {
             "inputs": {
-                "mode": "talk"          
+                "mode": "talk",    
+                "current_data":today_str
             },
             "query": message,
             "user": "docker-user-001",
@@ -164,6 +190,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 response = await client.post(CHAT_API_URL, headers=headers, json=data_payload)
                 response.raise_for_status()
                 json_data = response.json()
+                print(data_payload)
 
                 final_answer = json_data.get("answer", "[エラー: 応答を取得できませんでした]")
 
