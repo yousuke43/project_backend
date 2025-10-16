@@ -1,14 +1,14 @@
 import asyncio
 import json
 import os
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, Any
 
 import httpx
 import numpy as np
 import torch
 import csv
-import requests # requestsは未使用ですが、元のimportリストに残しています
+import requests  # requestsは未使用ですが、元のimportリストに残しています
 import re
 import uvicorn
 from faster_whisper import WhisperModel
@@ -20,8 +20,8 @@ from pydantic import BaseModel
 # --- グローバル設定 (Global Settings) ---
 DATA_DIR = "./data"
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
-MEMORY_FILE =os.path.join(DATA_DIR,"Memory.csv")
-FITBIT_FILE=os.path.join(DATA_DIR, "Fitbit.csv")
+MEMORY_FILE = os.path.join(DATA_DIR, "Memory.csv")
+FITBIT_FILE = os.path.join(DATA_DIR, "Fitbit.csv")
 today_str = date.today().isoformat()
 
 # Difyから取得したAPIキーとURLを環境変数から読み込む
@@ -34,12 +34,12 @@ REGISTER_WORKFLOW_URL = os.getenv("DIFY_REGISTER_URL", "http://host.docker.inter
 
 # DifyのナレッジベースID (管理画面のURLなどから確認)
 DATASET_ID = os.getenv("DIFY_DATASET_ID", "YOUR_ACTUAL_DATASET_ID")
-DIFY_DATASETS_API_KEY= os.getenv("DIFY_DATASETS_API_KEY","YOUR_DIFY_API_KEY")
+DIFY_DATASETS_API_KEY = os.getenv("DIFY_DATASETS_API_KEY", "YOUR_DIFY_API_KEY")
 
 DATASET_URL = f"http://host.docker.internal/v1/datasets/{DATASET_ID}/document/create-by-file"
 
-SPEAKER_ID = 3 # 例: 3 (春日部つむぎ ノーマル)
-OUTPUT_FILENAME = "generated_voice.wav" # 音声データの保存ファイル名は、今回は使用しない（WebSocketで直接送信するため）
+SPEAKER_ID = 3  # 例: 3 (春日部つむぎ ノーマル)
+OUTPUT_FILENAME = "generated_voice.wav"  # 音声データの保存ファイル名は、今回は使用しない（WebSocketで直接送信するため）
 
 print(f"--- 読み込まれたキーの確認: '{API_KEY}' ---")
 
@@ -75,6 +75,7 @@ except Exception as e:
     vad_model = None
     utils = None
 
+
 class EEGEvent(BaseModel):
     timestamp: str
     latitude: Optional[float] = None
@@ -82,7 +83,8 @@ class EEGEvent(BaseModel):
     place_name: str
     event_type: str
     arousal_value: float
-    
+
+
 @app.post("/log_event")
 async def log_eeg_event(event: EEGEvent):
     """
@@ -105,7 +107,7 @@ async def log_eeg_event(event: EEGEvent):
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("クライアントが接続しました！")
-    
+
     if not vad_model:
         print("VADモデルが利用できません。接続を閉じます。")
         await websocket.close(code=1011, reason="VAD model is not available")
@@ -117,9 +119,9 @@ async def websocket_endpoint(websocket: WebSocket):
     llm_wating = False
     fitbit_sending = False
     conversation_id = None
-    
+
     # 会話履歴を保存するためのリストを初期化
-    chat_history: list[dict[str, str]] = [] 
+    chat_history: list[dict[str, str]] = []
 
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -144,7 +146,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 current_data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             current_data = {}
-        
+
         last_date = current_data.get("last_conversation_date")
         if last_date != today_str:
             print(f"前回の会話日は {last_date}。今日の FitBit データを入手します。")
@@ -163,20 +165,20 @@ async def websocket_endpoint(websocket: WebSocket):
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
-        
+
         data_payload = {
             "inputs": {
-                "mode": "talk",    
-                "current_data":today_str
+                "mode": "talk",
+                "current_data": today_str
             },
             "query": message,
             "user": "docker-user-001",
-            "response_mode": "blocking" 
+            "response_mode": "blocking"
         }
 
         if conversation_id:
             data_payload["conversation_id"] = conversation_id
-        
+
         try:
             if fitbit_sending:
                 fitbit_data = await getFitbitData()
@@ -202,7 +204,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     # 区切り文字がなければ、全体を応答として扱う
                     pass
                 new_conv_id = json_data.get("conversation_id")
-                
+
                 if new_conv_id:
                     conversation_id = new_conv_id
 
@@ -210,25 +212,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 chat_history.append({"role": "user", "content": message})
                 chat_history.append({"role": "ai", "content": final_answer})
                 print("会話履歴に今回のやり取りを追加しました。")
-                
+
                 print(f"Difyからの最終応答: {final_answer}")
                 print(f"Conversation ID: {conversation_id}")
-                
+
                 # ★★★ 修正された音声合成と応答ロジック ★★★
                 wav_data = await voicevox_util.synthesize_voice(final_answer, SPEAKER_ID)
 
                 if wav_data:
                     # 音声合成成功: WAVファイルをクライアントに送信 (send_bytesを使用)
                     print(f"\n✅ 完了: 音声データ ({len(wav_data)} バイト) をクライアントに送信します。")
-                    
-                    # デバッグ/確認用にファイル保存を行う場合:
-                    # output_path = Path(OUTPUT_FILENAME)
-                    # output_path.write_bytes(wav_data)
-                    # print(f"デバッグ用: 音声は '{output_path.resolve()}' に保存されました。")
+
                     data = {
-                            "type": "ai_response",
-                            "text": final_answer
-                            }
+                        "type": "ai_response",
+                        "text": final_answer
+                    }
                     # 辞書をJSON形式の文字列に変換
                     # ensure_ascii=False は日本語を正しく扱うために重要です
                     json_string = json.dumps(data, ensure_ascii=False)
@@ -237,11 +235,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_text(json_string)
                     # クライアントへの応答として、生成された音声データ (WAV) を送信
                     await websocket.send_bytes(wav_data)
-                    
+
                 else:
                     # 音声合成失敗: フォールバックとしてテキストをクライアントに送信
                     print("\n❌ 音声合成に失敗しました。VOICEVOXエンジンが起動しているか確認してください。テキストを代替応答として送信します。")
-                    await websocket.send_text(final_answer) # テキストをクライアントに送信
+                    await websocket.send_text(final_answer)  # テキストをクライアントに送信
                 # ★★★ 修正終わり ★★★
 
         except httpx.HTTPStatusError as e:
@@ -273,7 +271,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
-        
+
         # レジスターモードのワークフローに渡すデータを作成
         data_payload = {
             "inputs": {
@@ -285,7 +283,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "user": "docker-user-001",
             "response_mode": "blocking"
         }
-        
+
         print("会話の要約と新しい思い出の抽出をDifyにリクエストします...")
 
         try:
@@ -294,7 +292,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 response = await client.post(REGISTER_WORKFLOW_URL, headers=headers, json=data_payload)
                 response.raise_for_status()
                 json_data = response.json()
-                
+
                 extracted_memory = json_data.get("answer")
 
                 if extracted_memory:
@@ -316,14 +314,13 @@ async def websocket_endpoint(websocket: WebSocket):
             return None
 
     async def save_to_csv(memories_string: str):
-
         if not memories_string or not isinstance(memories_string, str):
             print("保存する新しい思い出がありません。")
             return
 
         today_str = date.today().isoformat()
         new_rows = []
-        
+
         # CSV解析部分
         memory_list = memories_string.strip().split('\n')
         for memory_line in memory_list:
@@ -339,11 +336,11 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception as e:
                 print(f"Error parsing memory line: '{memory_line}', Error: {e}")
                 continue
-        
+
         if not new_rows:
             print("解析の結果、保存する新しい思い出がありませんでした。")
             return
-            
+
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
             file_exists = os.path.isfile(MEMORY_FILE)
@@ -359,7 +356,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 print("DIFY_DATASET_IDが設定されていないため、ナレッジの更新をスキップします。")
                 return
 
-            endpoint = DATASET_URL 
+            endpoint = DATASET_URL
             headers = {
                 "Authorization": f"Bearer {DIFY_DATASETS_API_KEY}"
             }
@@ -374,7 +371,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 }
 
                 print("Difyナレッジへのファイルアップロードを開始します...")
-                
+
                 # httpx の非同期処理に置き換え
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     try:
@@ -389,69 +386,75 @@ async def websocket_endpoint(websocket: WebSocket):
 
         except Exception as e:
             print(f"CSVファイルへの書き込みまたはアップロード中にエラーが発生しました: {e}")
-        
 
     # --- メイン処理開始 ---
     await checkLastDate()
-    
+
     try:
         while True:
             # WebSocketからデータを受け取る
-            data_bytes = await websocket.receive_bytes() 
-            if llm_wating:
-                continue 
-            
-            # VAD処理
-            audio_buffer.extend(data_bytes)
-            audio_int16 = np.frombuffer(data_bytes, dtype=np.int16)
-            audio_float32 = audio_int16.astype(np.float32) / 32768.0
-            
-            speech_dict = vad_iterator(torch.from_numpy(audio_float32), return_seconds=True)
-            
-            if speech_dict and 'end' in speech_dict:
-                print("発話終了を検出。文字起こしを実行します...")
-                llm_wating = True
-                await asyncio.sleep(0.3) # わずかな遅延を挿入
+            message = await websocket.receive()
+            if llm_wating: continue
 
-                full_audio_float32 = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
+            # 1. テキストが送られてきた場合の処理
+            if "text" in message:
+                received_text = message["text"]
+                print(f"💬 テキストメッセージ受信: '{received_text}'")
                 
-                # FasterWhisperで文字起こし
-                segments, _ = model.transcribe(
-                    full_audio_float32,
-                    beam_size=5,
-                    language="ja",
-                    vad_filter=True,
-                    vad_parameters=dict(min_silence_duration_ms=500),
-                )
-                transcription = "".join([s.text for s in segments]).strip()
-                print(f"文字起こし結果: {transcription}")
+                # 文字起こしをスキップして、直接AIに送る
+                llm_wating = True
+                asyncio.create_task(sendToLLM(received_text))
 
+            # VAD処理
+            elif "bytes" in message:
+                data_bytes = message["bytes"]
+                audio_buffer.extend(data_bytes)
+                audio_int16 = np.frombuffer(data_bytes, dtype=np.int16)
+                audio_float32 = audio_int16.astype(np.float32) / 32768.0
 
+                speech_dict = vad_iterator(torch.from_numpy(audio_float32), return_seconds=True)
 
-                audio_buffer.clear()
-                vad_iterator.reset_states()
-                print("--- バッファリセット完了、LLM処理を開始 ---")
+                if speech_dict and 'end' in speech_dict:
+                    print("発話終了を検出。文字起こしを実行します...")
+                    llm_wating = True
+                    await asyncio.sleep(0.3)  # わずかな遅延を挿入
 
-                if transcription:
-                    # LLMへの送信は非同期タスクとして実行
-                    
+                    full_audio_float32 = np.frombuffer(audio_buffer, dtype=np.int16).astype(np.float32) / 32768.0
 
-                    # 送りたいデータを作成 (辞書型)
-                    data = {
-                    "type": "user_transcription",
-                    "text": transcription
-                    }
+                    # FasterWhisperで文字起こし
+                    segments, _ = model.transcribe(
+                        full_audio_float32,
+                        beam_size=5,
+                        language="ja",
+                        vad_filter=True,
+                        vad_parameters=dict(min_silence_duration_ms=500),
+                    )
+                    transcription = "".join([s.text for s in segments]).strip()
+                    print(f"文字起こし結果: {transcription}")
 
-                    # 辞書をJSON形式の文字列に変換
-                    # ensure_ascii=False は日本語を正しく扱うために重要です
-                    json_string = json.dumps(data, ensure_ascii=False)
+                    audio_buffer.clear()
+                    vad_iterator.reset_states()
+                    print("--- バッファリセット完了、LLM処理を開始 ---")
 
-                    # 文字列として送信
-                    await websocket.send_text(json_string)
-                    asyncio.create_task(sendToLLM(transcription))
-                else:
-                    llm_wating = False
-                    print("空の発話だったのでスキップ。")
+                    if transcription:
+                        # LLMへの送信は非同期タスクとして実行
+                        
+                        # 送りたいデータを作成 (辞書型)
+                        data = {
+                            "type": "user_transcription",
+                            "text": transcription
+                        }
+
+                        # 辞書をJSON形式の文字列に変換
+                        # ensure_ascii=False は日本語を正しく扱うために重要です
+                        json_string = json.dumps(data, ensure_ascii=False)
+
+                        # 文字列として送信
+                        await websocket.send_text(json_string)
+                        asyncio.create_task(sendToLLM(transcription))
+                    else:
+                        llm_wating = False
+                        print("空の発話だったのでスキップ。")
 
     except WebSocketDisconnect:
         print("クライアントが切断しました。")
@@ -465,14 +468,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     file_data = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
                 file_data = {}
-            
+
             file_data["conversation_id"] = conversation_id
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(file_data, f, ensure_ascii=False, indent=4)
             print(f"最新の会話ID ({conversation_id}) をファイルに保存しました。")
 
         vad_iterator.reset_states()
-        
+
         # ▼▼▼ テスト用：ここにサンプル会話履歴をハードコード ▼▼▼
         print("--- テストモード: サンプル会話履歴を使用して思い出を抽出します ---")
         test_chat_history = [
@@ -484,10 +487,10 @@ async def websocket_endpoint(websocket: WebSocket):
             {"role": "ai", "content": "特別な場所だったのですね。お友達とは今でもご連絡を？"},
             {"role": "user", "content": "ああ、今でも年に一度は集まって、あの頃の話をするよ。もちろん、あのラーメン屋の話もね。"}
         ]
-        
+
         # 接続終了時に、テスト用の会話履歴を使って思い出を抽出
         await getNewMemory(test_chat_history)
-        
+
         # 本番運用時は、上の行をコメントアウトし、下の行のコメントを解除します
         # await getNewMemory(chat_history)
 
