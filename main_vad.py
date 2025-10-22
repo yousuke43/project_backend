@@ -17,6 +17,11 @@ import voicevox_util
 from pathlib import Path
 from pydantic import BaseModel
 
+from collections import deque
+import numpy as np
+from pydantic import BaseModel
+from typing import Optional, Any # 既存のimportに追加
+
 # --- グローバル設定 (Global Settings) ---
 DATA_DIR = "./data"
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
@@ -77,6 +82,57 @@ except Exception as e:
     utils = None
 
 
+# ★★★ 1. 脳波の状態を管理するクラスを定義 ★★★
+class EEGState:
+    """
+    /ws/eeg と /ws/transcribe の間で脳波の状態を共有するためのクラス
+    """
+    def __init__(self):
+        # サーバー側での検知ロジック用のバッファ
+        self.focus_history = deque(maxlen=30)  # 約60秒分 (2秒 * 30回)
+        self.arousal_history = deque(maxlen=30)
+        
+        # 検知したイベントを一時的に保持するフラグ
+        self.pending_server_event: Optional[str] = None 
+        self.is_event_active = False # イベントの持続チェック用
+
+    def add_eeg_data(self, data: dict):
+        """ /ws/eeg から呼び出され、脳波データを追加・分析する """
+        focus = data.get("focus", 0)
+        self.focus_history.append(focus)
+
+        if len(self.focus_history) < 10:
+            return # データが溜まるまで待つ
+
+        # --- ここにサーバー側の検知ロジックを実装 ---
+        
+        # (例: 集中度が10回(約20秒)連続で2.0を超えたら「集中」イベント)
+        avg_focus = np.mean(list(self.focus_history)[-10:])
+        
+        if avg_focus > 2.0 and not self.is_event_active:
+            # 「集中開始」イベント
+            self.pending_server_event = "focus_sustained" # ★イベントをセット
+            self.is_event_active = True
+            print("✨ [EEG Svr] 集中状態を検知！ 'focus_sustained' をセットしました。")
+        
+        elif avg_focus < 1.5 and self.is_event_active:
+            # 「集中終了」リセット
+            self.is_event_active = False
+            self.pending_server_event = None # (または "focus_ended" をセットしても良い)
+            print("--- [EEG Svr] 集中状態をリセット ---")
+    
+    def consume_event(self) -> Optional[str]:
+        """ /ws/transcribe (sendToLLM) から呼び出され、イベントを取得（消費）する """
+        if self.pending_server_event:
+            event = self.pending_server_event
+            self.pending_server_event = None # ★イベントを消費（クリア）
+            print(f"🔥 [Chat Svr] 検知したイベント ({event}) をDifyに送信します。")
+            return event
+        return None
+
+# ★★★ クラスをグローバルインスタンスとして作成 ★★★
+eeg_state = EEGState()
+
 class EEGEvent(BaseModel):
     timestamp: str
     latitude: Optional[float] = None
@@ -84,6 +140,8 @@ class EEGEvent(BaseModel):
     place_name: str
     event_type: str
     arousal_value: float
+
+
 
 # --- 脳波サマリー用のヘルパー関数 ---
 def format_event_to_sentence(event_data: dict) -> str:
@@ -123,6 +181,47 @@ async def get_eeg_summary() -> Optional[str]:
         print(f"🚨 脳波サマリー作成中にエラー: {e}")
         return None
 
+class EEGRawData(BaseModel):
+    timestamp: str
+    focus: float
+    relax: float
+    arousal: float
+
+@app.websocket("/ws/eeg")
+async def eeg_websocket_endpoint(websocket: WebSocket):
+    """
+    在宅用クライアントから常時脳波データを受け取るためのエンドポイント
+    """
+    await websocket.accept()
+    client_ip = websocket.client.host if websocket.client else "Unknown" # ★クライアントIP取得
+    print(f"🧠 脳波クライアント ({client_ip}) が /ws/eeg に接続しました。") # ★IP表示追加
+    try:
+        while True:
+            data_str = await websocket.receive_text()
+            # ★★★ 受信したことをまず表示 ★★★
+            print(f"✅ [EEG Svr] Raw data received from {client_ip}: {data_str[:100]}...") 
+            try:
+                data = json.loads(data_str)
+                validated_data = EEGRawData(**data) 
+                
+                # ★★★ 処理前にログ ★★★
+                print(f"⏳ [EEG Svr] Processing data for {client_ip}...")
+                eeg_state.add_eeg_data(validated_data.model_dump())
+                # ★★★ 処理後にログ ★★★
+                print(f"👍 [EEG Svr] Data processed successfully for {client_ip}.")
+                
+            except json.JSONDecodeError:
+                print(f"🚨 [EEG Svr] Invalid JSON received from {client_ip}.")
+            except Exception as e:
+                print(f"🚨 [EEG Svr] Error processing data from {client_ip}: {e}")
+                
+    except WebSocketDisconnect:
+        print(f"🧠 脳波クライアント ({client_ip}) が /ws/eeg から切断しました。") # ★IP表示追加
+    except Exception as e:
+        print(f"🚨🚨 [EEG Svr] Fatal error in WebSocket loop for {client_ip}: {e}") # ★IP表示追加
+        # (必要なら詳細なTracebackも表示)
+        import traceback
+        traceback.print_exc()
 
 @app.post("/log_event")
 async def log_eeg_event(event: EEGEvent):
@@ -229,6 +328,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 print(f"LLMにメッセージを送信 (Blocking): {message}")
 
+            detected_server_event = eeg_state.consume_event() # イベントを取得＆消費
+            if detected_server_event:
+                # inputs に 'server_trigger' を追加
+                data_payload['inputs']['server_trigger'] = detected_server_event
+                print(f"🔥 Difyペイロードに[在宅トリガー] ({detected_server_event}) を追加しました。")
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(CHAT_API_URL, headers=headers, json=data_payload)
                 response.raise_for_status()
