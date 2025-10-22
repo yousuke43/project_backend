@@ -12,4 +12,8 @@
 {"timestamp":"2025-10-16T14:09:08.423377","latitude":41.8411838510168,"longitude":140.7666497824032,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":30.7425}
 {"timestamp":"2025-10-16T14:09:40.269186","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":42.949}
 {"timestamp":"2025-10-16T14:09:58.637951","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":43.9439}
-{"timestamp":"2025-10-16T14:10:00.645018","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":54.297}
+{"timestamp":"2025-10-16T14:10:00.645018","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":54.297}{"timestamp":"2025-10-18T13:33:57.067236","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":2.0749}
+{"timestamp":"2025-10-18T13:34:11.855338","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":3.6187}
+{"timestamp":"2025-10-18T13:34:23.255292","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":6.8568}
+{"timestamp":"2025-10-22T13:34:30.247220","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":5.0061}
+{"timestamp":"2025-10-22T13:34:41.004383","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":1.3257}

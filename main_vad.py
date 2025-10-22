@@ -21,7 +21,7 @@ from pydantic import BaseModel
 DATA_DIR = "./data"
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
 MEMORY_FILE = os.path.join(DATA_DIR, "Memory.csv")
-FITBIT_FILE = os.path.join(DATA_DIR, "Fitbit.csv")
+HEALTH_FILE = os.path.join(DATA_DIR,"Health.csv")
 EEG_LOG_FILE = os.path.join(DATA_DIR, "eeg_events_log.jsonl")
 today_str = date.today().isoformat()
 
@@ -156,7 +156,7 @@ async def websocket_endpoint(websocket: WebSocket):
     vad_iterator = VADIterator(vad_model, threshold=0.5)
     audio_buffer = bytearray()
     llm_wating = False
-    fitbit_sending = False
+    today_check = False
     conversation_id = None
 
     # 会話履歴を保存するためのリストを初期化
@@ -178,7 +178,7 @@ async def websocket_endpoint(websocket: WebSocket):
     
 
     async def checkLastDate():
-        nonlocal fitbit_sending
+        nonlocal today_check
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 current_data = json.load(f)
@@ -188,8 +188,9 @@ async def websocket_endpoint(websocket: WebSocket):
         last_date = current_data.get("last_conversation_date")
         print(last_date)
         if last_date != today_str:
+            print(f"今日の日付：{today_str}")
             print(f"前回の会話日は {last_date}。今日の 脳波 データを入手します。")
-            fitbit_sending = True
+            today_check = True
             current_data["last_conversation_date"] = today_str
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump(current_data, f, ensure_ascii=False, indent=4)
@@ -198,7 +199,7 @@ async def websocket_endpoint(websocket: WebSocket):
             print("今日すでに 脳波 データは処理済みです。")
 
     async def sendToLLM(message: str):
-        nonlocal llm_wating, fitbit_sending, conversation_id, chat_history
+        nonlocal llm_wating, today_check, conversation_id, chat_history
 
         headers = {
             "Authorization": f"Bearer {API_KEY}",
@@ -219,12 +220,13 @@ async def websocket_endpoint(websocket: WebSocket):
             data_payload["conversation_id"] = conversation_id
 
         try:
-            if fitbit_sending:
-                fitbit_data = await get_eeg_summary()
-                data_payload['inputs']['eeg_summary'] = fitbit_data
-                print(f"LLMにメッセージとFitbitデータを送信 (Blocking): {message} {fitbit_data}")
-                fitbit_sending = False
+            if today_check:
+                eeg_data = await get_eeg_summary()
+                data_payload['inputs']['eeg_summary'] = eeg_data
+                print(f"LLMにメッセージと脳波位置情報データを送信 (Blocking): {message} {eeg_data}")
+                today_check = False
             else:
+                
                 print(f"LLMにメッセージを送信 (Blocking): {message}")
 
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -528,7 +530,7 @@ async def websocket_endpoint(websocket: WebSocket):
         ]
 
         # 接続終了時に、テスト用の会話履歴を使って思い出を抽出
-        await getNewMemory(test_chat_history)
+        await getNewMemory(chat_history)
 
         # 本番運用時は、上の行をコメントアウトし、下の行のコメントを解除します
         # await getNewMemory(chat_history)
