@@ -32,7 +32,7 @@ async def get_supported_speakers() -> Optional[list[dict[str, Any]]]:
 async def synthesize_voice(
     text: str, 
     speaker_id: int,
-    speed_scale: float = 1.3,
+    speed_scale: float = 1.0,
     pitch_scale: float = 0.02,
     intonation_scale: float = 1.2,
     volume_scale: float = 1.0

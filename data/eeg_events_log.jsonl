@@ -12,8 +12,16 @@
 {"timestamp":"2025-10-16T14:09:08.423377","latitude":41.8411838510168,"longitude":140.7666497824032,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":30.7425}
 {"timestamp":"2025-10-16T14:09:40.269186","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":42.949}
 {"timestamp":"2025-10-16T14:09:58.637951","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":43.9439}
-{"timestamp":"2025-10-16T14:10:00.645018","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":54.297}{"timestamp":"2025-10-18T13:33:57.067236","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":2.0749}
+{"timestamp":"2025-10-16T14:10:00.645018","latitude":41.84118790314559,"longitude":140.76665155041653,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":54.297}
+{"timestamp":"2025-10-18T13:33:57.067236","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":2.0749}
 {"timestamp":"2025-10-18T13:34:11.855338","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":3.6187}
 {"timestamp":"2025-10-18T13:34:23.255292","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":6.8568}
 {"timestamp":"2025-10-22T13:34:30.247220","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":5.0061}
 {"timestamp":"2025-10-22T13:34:41.004383","latitude":41.84119234834385,"longitude":140.76665901832067,"place_name":"公立はこだて未来大学","event_type":"arousal_spike","arousal_value":1.3257}
+{"timestamp":"2025-10-24T14:51:09.341906","latitude":41.84150827799636,"longitude":140.76711223912758,"place_name":"公立はこだて未来大学","event_type":"focus_sustained","arousal_value":1.9427}
+{"timestamp": "2025-11-14T10:35:12.123456", "latitude": 41.7970, "longitude": 140.7570, "place_name": "五稜郭公園", "event_type": "arousal_spike", "arousal_value": 2.8512}
+{"timestamp": "2025-11-14T11:40:25.456789", "latitude": 41.7965, "longitude": 140.7565, "place_name": "五稜郭公園", "event_type": "relax_spike", "arousal_value": 0.9834}
+{"timestamp": "2025-11-14T13:45:03.112233", "latitude": 41.7735, "longitude": 140.7265, "place_name": "丸井今井 函館店", "event_type": "focus_sustained", "arousal_value": 1.8904}
+{"timestamp": "2025-11-14T14:45:50.334455", "latitude": 41.7670, "longitude": 140.7200, "place_name": "金森赤レンガ倉庫", "event_type": "relax_spike", "arousal_value": 0.7560}
+{"timestamp": "2025-11-14T15:02:18.556677", "latitude": 41.7670, "longitude": 140.7200, "place_name": "金森赤レンガ倉庫", "event_type": "arousal_spike", "arousal_value": 2.4500}
+{"timestamp": "2025-11-14T15:45:33.778899", "latitude": 41.7675, "longitude": 140.7205, "place_name": "スターバックス コーヒー 函館ベイサイド店", "event_type": "focus_sustained", "arousal_value": 1.6219}

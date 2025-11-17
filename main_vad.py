@@ -12,7 +12,9 @@ import requests  # requestsは未使用ですが、元のimportリストに残�
 import re
 import uvicorn
 from faster_whisper import WhisperModel
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import traceback # ★ traceback をインポート (エラー表示用)
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException # ★ HTTPException を追加
+from fastapi.middleware.cors import CORSMiddleware
 import voicevox_util
 from pathlib import Path
 from pydantic import BaseModel
@@ -28,7 +30,10 @@ DATA_FILE = os.path.join(DATA_DIR, "data.json")
 MEMORY_FILE = os.path.join(DATA_DIR, "Memory.csv")
 HEALTH_FILE = os.path.join(DATA_DIR,"Health.csv")
 EEG_LOG_FILE = os.path.join(DATA_DIR, "eeg_events_log.jsonl")
+TRAITS_FILE = os.path.join(DATA_DIR,"Traits.csv")
 today_str = date.today().isoformat()
+
+
 
 # Difyから取得したAPIキーとURLを環境変数から読み込む
 # Load Dify API key and URLs from environment variables
@@ -44,7 +49,7 @@ DIFY_DATASETS_API_KEY = os.getenv("DIFY_DATASETS_API_KEY", "YOUR_DIFY_API_KEY")
 
 DATASET_URL = f"http://host.docker.internal/v1/datasets/{DATASET_ID}/document/create-by-file"
 
-SPEAKER_ID = 3  # 例: 3 (春日部つむぎ ノーマル)
+SPEAKER_ID = 20  
 OUTPUT_FILENAME = "generated_voice.wav"  # 音声データの保存ファイル名は、今回は使用しない（WebSocketで直接送信するため）
 
 print(f"--- 読み込まれたキーの確認: '{API_KEY}' ---")
@@ -53,6 +58,15 @@ print(f"--- 読み込まれたキーの確認: '{API_KEY}' ---")
 app = FastAPI()
 print("FastAPI サーバーを初期化しました。")
 
+
+# ★ 3. ミドルウェアをアプリに追加
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 全てのオリジンを許可
+    allow_credentials=True,
+    allow_methods=["*"],  # 全てのHTTPメソッドを許可（GET, POST, PUT, DELETE, etc）
+    allow_headers=["*"],  # 全てのヘッダーを許可
+)
 # --- 2. Whisperモデルロード (Load Whisper model) ---
 # GPUが利用可能かチェック
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -83,55 +97,12 @@ except Exception as e:
 
 
 # ★★★ 1. 脳波の状態を管理するクラスを定義 ★★★
-class EEGState:
-    """
-    /ws/eeg と /ws/transcribe の間で脳波の状態を共有するためのクラス
-    """
-    def __init__(self):
-        # サーバー側での検知ロジック用のバッファ
-        self.focus_history = deque(maxlen=30)  # 約60秒分 (2秒 * 30回)
-        self.arousal_history = deque(maxlen=30)
-        
-        # 検知したイベントを一時的に保持するフラグ
-        self.pending_server_event: Optional[str] = None 
-        self.is_event_active = False # イベントの持続チェック用
+# gpu-transcriber-service.py の EEGState クラスを修正
 
-    def add_eeg_data(self, data: dict):
-        """ /ws/eeg から呼び出され、脳波データを追加・分析する """
-        focus = data.get("focus", 0)
-        self.focus_history.append(focus)
+# --- ★★★ 2. 最新の室内イベントを保持するグローバル変数 ★★★ ---
+latest_indoor_event: Optional[dict] = None
+event_lock = asyncio.Lock() # 非同期処理で安全にアクセスするためのロック
 
-        if len(self.focus_history) < 10:
-            return # データが溜まるまで待つ
-
-        # --- ここにサーバー側の検知ロジックを実装 ---
-        
-        # (例: 集中度が10回(約20秒)連続で2.0を超えたら「集中」イベント)
-        avg_focus = np.mean(list(self.focus_history)[-10:])
-        
-        if avg_focus > 2.0 and not self.is_event_active:
-            # 「集中開始」イベント
-            self.pending_server_event = "focus_sustained" # ★イベントをセット
-            self.is_event_active = True
-            print("✨ [EEG Svr] 集中状態を検知！ 'focus_sustained' をセットしました。")
-        
-        elif avg_focus < 1.5 and self.is_event_active:
-            # 「集中終了」リセット
-            self.is_event_active = False
-            self.pending_server_event = None # (または "focus_ended" をセットしても良い)
-            print("--- [EEG Svr] 集中状態をリセット ---")
-    
-    def consume_event(self) -> Optional[str]:
-        """ /ws/transcribe (sendToLLM) から呼び出され、イベントを取得（消費）する """
-        if self.pending_server_event:
-            event = self.pending_server_event
-            self.pending_server_event = None # ★イベントを消費（クリア）
-            print(f"🔥 [Chat Svr] 検知したイベント ({event}) をDifyに送信します。")
-            return event
-        return None
-
-# ★★★ クラスをグローバルインスタンスとして作成 ★★★
-eeg_state = EEGState()
 
 class EEGEvent(BaseModel):
     timestamp: str
@@ -141,7 +112,10 @@ class EEGEvent(BaseModel):
     event_type: str
     arousal_value: float
 
-
+# ★★★ 3. 室内イベント受け取り用の Pydantic モデルを追加 ★★★
+class IndoorEEGEvent(BaseModel):
+    timestamp: str
+    event_type: str # "focus_sustained", "relax_spike", "arousal_spike" など
 
 # --- 脳波サマリー用のヘルパー関数 ---
 def format_event_to_sentence(event_data: dict) -> str:
@@ -187,41 +161,94 @@ class EEGRawData(BaseModel):
     relax: float
     arousal: float
 
-@app.websocket("/ws/eeg")
-async def eeg_websocket_endpoint(websocket: WebSocket):
+# gpu-transcriber-service.py の修正箇所
+@app.get("/get_health_data")
+async def get_health_data_csv():
     """
-    在宅用クライアントから常時脳波データを受け取るためのエンドポイント
+    Health.csv ファイルの内容をJSON配列として返します。
+    React (Chart.js) が期待する数値型に変換します。
     """
-    await websocket.accept()
-    client_ip = websocket.client.host if websocket.client else "Unknown" # ★クライアントIP取得
-    print(f"🧠 脳波クライアント ({client_ip}) が /ws/eeg に接続しました。") # ★IP表示追加
+    if not os.path.exists(HEALTH_FILE):
+        print(f"🚨 API /get_health_data: {HEALTH_FILE} が見つかりません。")
+        raise HTTPException(status_code=404, detail=f"{os.path.basename(HEALTH_FILE)} not found")
+    
+    health_data_list = []
     try:
-        while True:
-            data_str = await websocket.receive_text()
-            # ★★★ 受信したことをまず表示 ★★★
-            print(f"✅ [EEG Svr] Raw data received from {client_ip}: {data_str[:100]}...") 
-            try:
-                data = json.loads(data_str)
-                validated_data = EEGRawData(**data) 
-                
-                # ★★★ 処理前にログ ★★★
-                print(f"⏳ [EEG Svr] Processing data for {client_ip}...")
-                eeg_state.add_eeg_data(validated_data.model_dump())
-                # ★★★ 処理後にログ ★★★
-                print(f"👍 [EEG Svr] Data processed successfully for {client_ip}.")
-                
-            except json.JSONDecodeError:
-                print(f"🚨 [EEG Svr] Invalid JSON received from {client_ip}.")
-            except Exception as e:
-                print(f"🚨 [EEG Svr] Error processing data from {client_ip}: {e}")
-                
-    except WebSocketDisconnect:
-        print(f"🧠 脳波クライアント ({client_ip}) が /ws/eeg から切断しました。") # ★IP表示追加
+        # 'utf-8-sig' でBOM (Excelなどが付ける不可視の文字) を処理
+        with open(HEALTH_FILE, mode='r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            
+            print(f"✅ API /get_health_data: CSVヘッダー読み込み: {reader.fieldnames}")
+
+            for row in reader:
+                try:
+                    # React側が数値を期待するため、型変換を行う
+                    # React側のコード (HealthPage.jsx) が期待するキー名に合わせる
+                    processed_row = {
+                        "date": row.get('date'),
+                        "体重": float(row.get('体重')),
+                        "歩数": int(row.get('歩数')),
+                        "睡眠時間": float(row.get('睡眠時間')),
+                        "最高血圧": int(row.get('最高血圧')),
+                        "最低血圧": int(row.get('最低血圧')),
+                        "消費カロリー": int(row.get('消費カロリー'))
+                    }
+                    health_data_list.append(processed_row)
+                except (ValueError, TypeError, KeyError) as convert_error:
+                    # データが空 (None) だったり、数値に変換できない、またはキーが存在しない場合はその行をスキップ
+                    print(f"⚠️ API /get_health_data: 行をスキップ (型変換/キーエラー): {row} - {convert_error}")
+                    continue
+        
+        print(f"✅ API /get_health_data: {len(health_data_list)} 件の健康データをJSONで送信します。")
+        return health_data_list
+        
     except Exception as e:
-        print(f"🚨🚨 [EEG Svr] Fatal error in WebSocket loop for {client_ip}: {e}") # ★IP表示追加
-        # (必要なら詳細なTracebackも表示)
-        import traceback
+        print(f"🚨 API /get_health_data: CSV読み込み中にエラー: {e}")
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error reading health CSV: {e}")
+
+@app.get("/get_memories")
+async def get_memories_csv():
+    """
+    Memory.csv ファイルの内容をJSON配列として返します。
+    (BOMを処理し、キー名をReactが期待する形に正規化します)
+    """
+    if not os.path.exists(MEMORY_FILE):
+        print(f"🚨 API /get_memories: {MEMORY_FILE} が見つかりません。")
+        raise HTTPException(status_code=404, detail=f"{os.path.basename(MEMORY_FILE)} not found")
+    
+    memories_normalized = []
+    try:
+        # ★ encoding='utf-8-sig' でBOMを自動的に処理
+        with open(MEMORY_FILE, mode='r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            
+            print(f"✅ API /get_memories: CSVヘッダー読み込み: {reader.fieldnames}")
+
+            for row in reader:
+                # ★ React側が期待するキー名 ("日付", "トピック", "内容") にマッピング
+                normalized_row = {
+                    "日付": row.get("日付"), # utf-8-sigでBOMが除去された "日付" キー
+                    # "タイトル" キーか "トピック" キーのどちらかに対応し、"トピック" に統一
+                    "トピック": row.get("タイトル") or row.get("トピック"), 
+                    "内容": row.get("内容")
+                }
+                
+                # (念のため) BOM除去がうまくいかなかった場合
+                if normalized_row["日付"] is None:
+                    normalized_row["日付"] = row.get("﻿日付") # BOM付きキーを試す
+                
+                memories_normalized.append(normalized_row)
+        
+        print(f"✅ API /get_memories: {len(memories_normalized)} 件の思い出を正規化して送信します。")
+        # ★ 正規化済みのリストを返す
+        return memories_normalized
+    except Exception as e:
+        print(f"🚨 API /get_memories: CSV読み込み中にエラー: {e}")
+        traceback.print_exc() # サーバーログに詳細なエラーを表示
+        raise HTTPException(status_code=500, detail=f"Error reading memory CSV: {e}")
+
+# ( ... @app.post("/log_event") ... はそのまま ... )}")
 
 @app.post("/log_event")
 async def log_eeg_event(event: EEGEvent):
@@ -240,7 +267,24 @@ async def log_eeg_event(event: EEGEvent):
         print(f"🚨 イベントのファイル保存中にエラーが発生しました: {e}")
         return {"status": "error", "message": str(e)}
 
-
+@app.post("/log_indoor_event")
+async def log_indoor_eeg_event(event: IndoorEEGEvent):
+    """
+    在宅用クライアントから検知された脳波イベント (集中など) を受け取るエンドポイント
+    """
+    global latest_indoor_event
+    event_type = event.event_type
+    print(f"🏠 室内イベント受信: '{event_type}'")
+    try:
+        async with event_lock: # グローバル変数を安全に更新
+            latest_indoor_event = event.model_dump() # 辞書として保存
+        print(f"💾 最新の室内イベントを '{event_type}' に更新しました。")
+        return {"status": "success"}
+    except Exception as e:
+        print(f"🚨 室内イベントの保存中にエラー: {e}")
+        # クライアントにエラーを返す (500 Internal Server Error)
+        raise HTTPException(status_code=500, detail=f"Error saving indoor event: {e}")
+    
 @app.websocket("/ws/transcribe")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -260,6 +304,28 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # 会話履歴を保存するためのリストを初期化
     chat_history: list[dict[str, str]] = []
+
+    traits_file_content = ""
+
+    try:
+        # ファイルを読み込みモード('r')で開く
+        # encoding='utf-8' を指定して日本語の文字化けを防ぐ
+        with open(TRAITS_FILE, 'r', encoding='utf-8') as f:
+            # .read() でファイルの内容すべてを文字列として読み込む
+            traits_file_content = f.read()
+        
+        # 読み込んだ内容の確認 (任意)
+        print(f"--- {TRAITS_FILE} の内容を読み込みました ---")
+        print(traits_file_content)
+        print("-----------------------------------")
+
+    except FileNotFoundError:
+        print(f"🚨 エラー: {TRAITS_FILE} が見つかりません。")
+        # traits_file_content は空文字列 "" のままになります
+
+    except Exception as e:
+        print(f"🚨 ファイル読み込み中に予期せぬエラーが発生しました: {e}")
+    # traits_file_content は空文字列 "" のままになります
 
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -299,6 +365,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     async def sendToLLM(message: str):
         nonlocal llm_wating, today_check, conversation_id, chat_history
+        global latest_indoor_event # ★ グローバル変数を参照
 
         headers = {
             "Authorization": f"Bearer {API_KEY}",
@@ -308,7 +375,9 @@ async def websocket_endpoint(websocket: WebSocket):
         data_payload = {
             "inputs": {
                 "mode": "talk",
-                "current_data": today_str
+                "current_data": today_str,
+                "personality_traits":traits_file_content,
+                "server_trigger":""
             },
             "query": message,
             "user": "docker-user-001",
@@ -328,11 +397,19 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 print(f"LLMにメッセージを送信 (Blocking): {message}")
 
-            detected_server_event = eeg_state.consume_event() # イベントを取得＆消費
-            if detected_server_event:
-                # inputs に 'server_trigger' を追加
-                data_payload['inputs']['server_trigger'] = detected_server_event
-                print(f"🔥 Difyペイロードに[在宅トリガー] ({detected_server_event}) を追加しました。")
+            event_to_send = None
+            processing_data = {"type": "ai_processing", "text": "（考え中...）"}
+            await websocket.send_text(json.dumps(processing_data, ensure_ascii=False))
+            async with event_lock: # 安全に読み取り＆リセット
+                if latest_indoor_event:
+                    event_to_send = latest_indoor_event.get("event_type")
+                    latest_indoor_event = None # ★ 送信したらリセット (消費)
+
+            if event_to_send:
+                data_payload['inputs']['server_trigger'] = event_to_send
+                print(f"🔥 Difyペイロードに[在宅トリガー] ({event_to_send}) を追加しました。")
+
+            print(f"Difyに送信するペイロード: {json.dumps(data_payload, indent=2, ensure_ascii=False)}")
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(CHAT_API_URL, headers=headers, json=data_payload)
                 response.raise_for_status()
@@ -441,13 +518,46 @@ async def websocket_endpoint(websocket: WebSocket):
                 extracted_memory = json_data.get("answer")
 
                 if extracted_memory:
-                    print("新しい思い出の抽出に成功しました。")
-                    print("--- 抽出された内容 ---")
-                    print(extracted_memory)
-                    print("----------------------")
-                    await save_to_csv(extracted_memory)
-                    return extracted_memory
-                else:
+            
+                    separator_pattern = re.compile(r"^(traits?|特性)\s*:", re.IGNORECASE | re.MULTILINE)
+                    match = separator_pattern.search(extracted_memory)
+                    
+                    # --- 変数をここで初期化 ---
+                    memories_part = ""
+                    traits_part = ""
+
+                    if match:
+                        # --- 1. 区切り文字が見つかった場合 ---
+                        memories_part = extracted_memory[:match.start()].strip()
+                        traits_part = extracted_memory[match.end():].strip()
+                        print("区切り文字が見つかり、思い出と特性に分割しました。")
+                    else:
+                        # --- 2. 区切り文字が見つからなかった場合 (elseブロックの追加) ---
+                        memories_part = extracted_memory.strip()
+                        # traits_part は空のまま
+                        print("区切り文字が見つからず、全体を思い出として処理します。")
+
+                    print("--- 抽出された思い出 (保存対象) ---")
+                    print(memories_part)
+                    print("-----------------------------")
+                    print("--- 抽出された特性 (保存対象) ---")
+                    print(traits_part)
+                    print("-----------------------------")
+
+                    # --- 3. 正しい関数を呼び出す (修正点) ---
+                    
+                    # (1) 思い出を保存
+                    if memories_part:
+                        await save_memories_to_csv(memories_part)
+                    
+                    # (2) 特性を保存
+                    if traits_part:
+                        await save_traits_to_csv(traits_part)
+
+                    # 関数としては抽出した思い出部分を返す (これは元の設計と同じ)
+                    return memories_part
+            
+                else: # (これは元のコードの else)
                     print("思い出は抽出されませんでした（応答が空でした）。")
                     return None
 
@@ -458,7 +568,7 @@ async def websocket_endpoint(websocket: WebSocket):
             print(f"[エラー] 思い出抽出中に予期せぬエラー: {e}")
             return None
 
-    async def save_to_csv(memories_string: str):
+    async def save_memories_to_csv(memories_string: str):
         if not memories_string or not isinstance(memories_string, str):
             print("保存する新しい思い出がありません。")
             return
@@ -531,6 +641,61 @@ async def websocket_endpoint(websocket: WebSocket):
 
         except Exception as e:
             print(f"CSVファイルへの書き込みまたはアップロード中にエラーが発生しました: {e}")
+
+    async def save_traits_to_csv(traits_string: str):
+
+        if not traits_string or not isinstance(traits_string, str):
+            print("保存する特性がありません。")
+            return
+
+        today_str_csv = date.today().isoformat()
+        new_rows = []
+
+        # 文字列を改行でリスト化
+        trait_list = traits_string.strip().split('\n')
+        
+        for trait_line in trait_list:
+            trait_line = trait_line.strip()
+            if not trait_line: 
+                continue # 空行はスキップ
+
+            # 1. 箇条書きマーク ( *, - ) があれば除去
+            if trait_line.startswith(('*', '-')):
+                trait_line = trait_line[1:].strip()
+
+            # 2. プレフィックス (特性:, Trait:) があれば除去
+            # re.sub を使って、行頭の "特性:" や "Trait:" (大文字小文字無視) を空文字列に置換
+            prefix_pattern = re.compile(r"^(特性|Trait)\s*[:：]\s*")
+            trait_content = prefix_pattern.sub("", trait_line).strip()
+
+            # 3. 内容が残っていればリストに追加
+            if trait_content:
+                new_rows.append([today_str_csv, trait_content])
+
+        if not new_rows:
+            print("解析の結果、保存する新しい特性がありませんでした。")
+            return
+
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            # 保存先ファイル (TRAITS_FILE) の存在チェック
+            file_exists = os.path.isfile(TRAITS_FILE)
+            
+            with open(TRAITS_FILE, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                
+                # 1. ファイルが存在しないか、中身が空の場合のみヘッダーを書き込む
+                if not file_exists or os.path.getsize(TRAITS_FILE) == 0:
+                    writer.writerow(["日付", "特性"]) # ヘッダー
+                    
+                # 2. 新しい行（特性）を追記
+                writer.writerows(new_rows)
+                
+            print(f"{len(new_rows)}件の特性を {TRAITS_FILE} に保存しました。")
+
+        except Exception as e:
+            print(f"🚨 特性CSVファイル ({TRAITS_FILE}) への書き込み中にエラー: {e}")
+
 
     # --- メイン処理開始 ---
     await checkLastDate()
